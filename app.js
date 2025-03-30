@@ -5,6 +5,9 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 const app = express();
 const port = 3003;
 
+
+app.use(express.json());
+
 // Create a WhatsApp client
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -43,8 +46,8 @@ client.on("disconnected", (reason) => {
 client.initialize();
 
 // Endpoint to send a message
-app.get("/send", async (req, res) => {
-  const { number, message } = req.query;
+app.post("/send-otp", async (req, res) => {
+  const { number, message } = req.body;
 
   // Check if number and message are provided
   if (!number || !message) {
