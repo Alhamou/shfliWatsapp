@@ -8,7 +8,10 @@ const port = 3003;
 // Create a WhatsApp client
 const client = new Client({
   authStrategy: new LocalAuth(),
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  puppeteer: {
+    executablePath: '/snap/bin/chromium',
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  }
 });
 
 // Display QR Code when needed
