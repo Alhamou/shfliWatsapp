@@ -87,3 +87,23 @@ app.post ("/send_message", async (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
+
+
+
+process.on('SIGINT', async () => {
+  console.log('إغلاق التطبيق...');
+  await client.destroy();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('إنهاء التطبيق...');
+  await client.destroy();
+  process.exit(0);
+});
+
+process.on('uncaughtException', async (error) => {
+  console.error('خطأ غير متوقع:', error);
+  await client.destroy();
+  process.exit(1);
+});
