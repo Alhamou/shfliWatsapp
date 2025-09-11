@@ -1,0 +1,25 @@
+{
+  "name": "shfliwatsapp",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alhamou/shfliWatsapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Alhamou/shfliWatsapp/issues"
+  },
+  "homepage": "https://github.com/Alhamou/shfliWatsapp#readme",
+  "description": "",
+  "dependencies": {
+    "express": "^5.1.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.1"
+  }
+}

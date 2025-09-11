@@ -49,13 +49,12 @@ client.on("disconnected", (reason) => {
 // Initialize the client
 client.initialize();
 
-// Endpoint to send a message
-app.post("/send-otp", async (req, res) => {
-  const { number, message } = req.body;
+app.post ("/send_message", async (req, res) => {
+  const { phone_number, block_message } = req.body;
 
-  // Check if number and message are provided
-  if (!number || !message) {
-    return res.status(400).send("Phone number and message are required.");
+  // Check if phone_number and message are provided
+  if (!phone_number || !block_message) {
+    return res.status(400).send("Phone phone_number and message are required.");
   }
 
   // Ensure the client is ready
@@ -63,41 +62,21 @@ app.post("/send-otp", async (req, res) => {
     return res.status(503).json({ error: "WhatsApp client is not ready yet." });
   }
 
-  try {
-    const chatId = number.substring(1) + "@c.us";
-
-    const isRegistered = await client.isRegisteredUser(chatId);
-    if (isRegistered) {
-      await client.sendMessage(chatId, message);
-      return res.status(201).json({ message: "Message sent successfully!" });
-    } else {
-      return res
-        .status(400)
-        .json({ error: "Number is not registered on WhatsApp." });
-    }
-  } catch (err) {
-    console.error("Failed to send message:", err);
-    return res.status(500).json({ error: "Failed to send message." });
-  }
-});
-
-app.post ("/send_message", async (req, res) => {
-  const { phone_number, block_message } = req.body;
-
   console.log(phone_number, block_message)
 
   try {
     const chatId = phone_number.substring(1) + "@c.us";
 
     const isRegistered = await client.isRegisteredUser(chatId);
-    if (isRegistered) {
-      await client.sendMessage(chatId, block_message);
-      return res.status(201).json({ message: "Message sent successfully!" });
-    } else {
-      return res
-          .status(400)
-          .json({ error: "Number is not registered on WhatsApp." });
+    if (!isRegistered) {
+      res.status(400).json({ error: "Number is not registered on WhatsApp." });
+      return
     }
+
+    await client.sendMessage(chatId, block_message);
+    return res.status(201).json({ message: "Message sent successfully!" });
+
+
   } catch (err) {
     console.error("Failed to send message:", err);
     return res.status(500).json({ error: "Failed to send message." });
