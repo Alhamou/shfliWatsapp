@@ -5,14 +5,13 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 const app = express();
 const port = 3003;
 
-
 app.use(express.json());
 
 // Create a WhatsApp client
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    executablePath: '/usr/bin/chromium-browser',
+    executablePath: '/snap/bin/chromium',
     headless: true,
     args: [
       '--no-sandbox',
@@ -22,7 +21,11 @@ const client = new Client({
       '--no-first-run',
       '--no-zygote',
       '--single-process',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--disk-cache-size=50000000',
+      '--aggressive-cache-discard',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor'
     ]
   }
 });
@@ -55,65 +58,122 @@ client.on("disconnected", (reason) => {
 // Initialize the client
 client.initialize();
 
-app.post ("/send_message", async (req, res) => {
+// API endpoint to send WhatsApp messages
+app.post("/send_message", async (req, res) => {
   const { phone_number, block_message } = req.body;
 
-  // Check if phone_number and message are provided
+  // Validate required data
   if (!phone_number || !block_message) {
-    return res.status(400).send("Phone phone_number and message are required.");
+    return res.status(400).json({
+      error: "Phone number and message are required."
+    });
   }
 
-  // Ensure the client is ready
+  // Check if client is ready
   if (!client.info) {
-    return res.status(503).json({ error: "WhatsApp client is not ready yet." });
+    return res.status(503).json({
+      error: "WhatsApp client is not ready yet."
+    });
   }
 
-  console.log(phone_number, block_message)
+  console.log(`Sending to: ${phone_number}, Message: ${block_message}`);
 
   try {
-    const chatId = phone_number.substring(1) + "@c.us";
-
-    const isRegistered = await client.isRegisteredUser(chatId);
-    if (!isRegistered) {
-      res.status(400).json({ error: "Number is not registered on WhatsApp." });
-      return
+    // Format phone number (remove + if present)
+    let formattedNumber = phone_number;
+    if (formattedNumber.startsWith('+')) {
+      formattedNumber = formattedNumber.substring(1);
     }
 
-    await client.sendMessage(chatId, block_message);
-    return res.status(201).json({ message: "Message sent successfully!" });
+    // Create WhatsApp chat ID
+    const chatId = formattedNumber + "@c.us";
 
+    // Check if number is registered on WhatsApp
+    const isRegistered = await client.isRegisteredUser(chatId);
+    if (!isRegistered) {
+      return res.status(400).json({
+        error: "Number is not registered on WhatsApp."
+      });
+    }
+
+    // Send the message
+    await client.sendMessage(chatId, block_message);
+    return res.status(201).json({
+      message: "Message sent successfully!",
+      to: phone_number
+    });
 
   } catch (err) {
     console.error("Failed to send message:", err);
-    return res.status(500).json({ error: "Failed to send message." });
+    return res.status(500).json({
+      error: "Failed to send message.",
+      details: err.message
+    });
   }
+});
 
-})
+// Check connection status
+app.get('/status', (req, res) => {
+  const status = {
+    ready: !!client.info,
+    info: client.info || null,
+    timestamp: Date.now()
+  };
+
+  res.status(200).json(status);
+});
+
+// Restart the WhatsApp client
+app.post('/restart', async (req, res) => {
+  try {
+    await client.destroy();
+    await client.initialize();
+    res.json({ message: 'Client restarted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to restart client' });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  const health = {
+    uptime: process.uptime(),
+    message: 'OK',
+    timestamp: Date.now(),
+    memory: process.memoryUsage(),
+    client_status: client.info ? 'connected' : 'disconnected'
+  };
+
+  res.status(200).json(health);
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
 
-
-
+// Graceful shutdown on SIGINT (Ctrl+C)
 process.on('SIGINT', async () => {
   console.log('Shutting down application...');
   await client.destroy();
   process.exit(0);
 });
 
+// Graceful shutdown on SIGTERM (PM2 or system)
 process.on('SIGTERM', async () => {
   console.log('Terminating application...');
   await client.destroy();
   process.exit(0);
 });
 
+// Handle uncaught exceptions
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error);
   await client.destroy();
   process.exit(1);
 });
 
+// Handle unhandled promise rejections
 process.on('unhandledRejection', async (reason, promise) => {
   console.error('Unhandled rejection at:', promise, 'reason:', reason);
   await client.destroy();
