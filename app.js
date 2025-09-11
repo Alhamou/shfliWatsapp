@@ -12,8 +12,12 @@ app.use(express.json());
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    executablePath: '/snap/bin/chromium',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+    ]
   }
 });
 
@@ -77,6 +81,29 @@ app.post("/send-otp", async (req, res) => {
   }
 });
 
+app.post ("/send_message", async (req, res) => {
+  const { phone_number, block_message } = req.body;
+
+  console.log(phone_number, block_message)
+
+  try {
+    const chatId = phone_number.substring(1) + "@c.us";
+
+    const isRegistered = await client.isRegisteredUser(chatId);
+    if (isRegistered) {
+      await client.sendMessage(chatId, block_message);
+      return res.status(201).json({ message: "Message sent successfully!" });
+    } else {
+      return res
+          .status(400)
+          .json({ error: "Number is not registered on WhatsApp." });
+    }
+  } catch (err) {
+    console.error("Failed to send message:", err);
+    return res.status(500).json({ error: "Failed to send message." });
+  }
+
+})
 // Start the server
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
