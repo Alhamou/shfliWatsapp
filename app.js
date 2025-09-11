@@ -97,19 +97,25 @@ app.listen(port, () => {
 
 
 process.on('SIGINT', async () => {
-  console.log('إغلاق التطبيق...');
+  console.log('Shutting down application...');
   await client.destroy();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('إنهاء التطبيق...');
+  console.log('Terminating application...');
   await client.destroy();
   process.exit(0);
 });
 
 process.on('uncaughtException', async (error) => {
-  console.error('خطأ غير متوقع:', error);
+  console.error('Uncaught exception:', error);
+  await client.destroy();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
   await client.destroy();
   process.exit(1);
 });
