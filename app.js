@@ -7,7 +7,7 @@ const port = 3003;
 
 app.use(express.json());
 
-// Create a WhatsApp client
+// Create a WhatsApp client with improved puppeteer settings
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
@@ -25,24 +25,30 @@ const client = new Client({
       '--disk-cache-size=50000000',
       '--aggressive-cache-discard',
       '--disable-web-security',
-      '--disable-features=VizDisplayCompositor'
+      '--disable-features=VizDisplayCompositor',
+      '--max_old_space_size=2048', // Increase memory limit
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding'
     ]
-  }
+  },
+  session: 'whatsapp-session' // Add session identifier
 });
 
 // Display QR Code when needed
 client.on("qr", (qr) => {
+  console.log("QR Code generated, scan it with your phone:");
   qrcode.generate(qr, { small: true });
 });
 
 // When the client is ready
 client.on("ready", () => {
-  console.log("Client is ready!");
+  console.log("WhatsApp Client is ready!");
 });
 
 // When authentication is successful
 client.on("authenticated", () => {
-  console.log("Authenticated successfully!");
+  console.log("Authentication successful!");
 });
 
 // When authentication fails
@@ -50,15 +56,71 @@ client.on("auth_failure", (msg) => {
   console.error("Authentication failed:", msg);
 });
 
-// When the client is disconnected
-client.on("disconnected", (reason) => {
-  console.log("Disconnected:", reason);
+// Enhanced disconnection handler with auto-reconnect
+client.on("disconnected", async (reason) => {
+  console.log("Client disconnected:", reason);
+
+  // Auto-reconnect for navigation errors
+  if (reason === 'NAVIGATION') {
+    console.log("Attempting to reconnect due to navigation error...");
+    await restartClient();
+  }
+});
+
+// Error handler for session issues
+client.on('error', async (error) => {
+  console.error('Client error occurred:', error);
+
+  // Handle session closed errors
+  if (error.message.includes('Session closed') ||
+      error.message.includes('Protocol error')) {
+    console.log("Session error detected, restarting client...");
+    await restartClient();
+  }
 });
 
 // Initialize the client
 client.initialize();
 
-// API endpoint to send WhatsApp messages
+// Function to restart the WhatsApp client
+async function restartClient() {
+  try {
+    console.log("Starting WhatsApp client restart...");
+
+    // Destroy existing client if it exists
+    if (client.pupPage) {
+      await client.destroy();
+    }
+
+    // Wait before reinitializing
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Reinitialize the client
+    await client.initialize();
+
+    console.log("Client restarted successfully");
+    return true;
+  } catch (error) {
+    console.error("Failed to restart client:", error);
+    return false;
+  }
+}
+
+// Function to wait for client to be ready
+async function waitForClientReady(maxWait = 30000) {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWait) {
+    if (client.info) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  throw new Error("Timeout waiting for client to be ready");
+}
+
+// Enhanced API endpoint to send WhatsApp messages with session error handling
 app.post("/send_message", async (req, res) => {
   const { phone_number, block_message } = req.body;
 
@@ -88,16 +150,69 @@ app.post("/send_message", async (req, res) => {
     // Create WhatsApp chat ID
     const chatId = formattedNumber + "@c.us";
 
-    // Check if number is registered on WhatsApp
-    const isRegistered = await client.isRegisteredUser(chatId);
+    // Check if number is registered on WhatsApp with session error handling
+    let isRegistered;
+    try {
+      isRegistered = await client.isRegisteredUser(chatId);
+    } catch (sessionError) {
+      // Handle session closed errors during registration check
+      if (sessionError.message.includes('Session closed') ||
+          sessionError.message.includes('Protocol error')) {
+
+        console.log("Puppeteer session closed during registration check, restarting...");
+
+        try {
+          // Restart the client
+          await client.destroy();
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          await client.initialize();
+
+          // Wait for client to be ready
+          await waitForClientReady();
+
+          // Retry registration check
+          isRegistered = await client.isRegisteredUser(chatId);
+        } catch (restartError) {
+          console.error("Failed to restart client:", restartError);
+          return res.status(503).json({
+            error: "Failed to reconnect to WhatsApp.",
+            details: "Puppeteer session closed and cannot be restarted"
+          });
+        }
+      } else {
+        throw sessionError; // Re-throw if not session related
+      }
+    }
+
     if (!isRegistered) {
       return res.status(400).json({
         error: "Number is not registered on WhatsApp."
       });
     }
 
-    // Send the message
-    await client.sendMessage(chatId, block_message);
+    // Send the message with session error handling
+    try {
+      await client.sendMessage(chatId, block_message);
+    } catch (sendError) {
+      // Handle session closed errors during message sending
+      if (sendError.message.includes('Session closed') ||
+          sendError.message.includes('Protocol error')) {
+
+        console.log("Session closed during message sending, attempting retry...");
+
+        // Restart client and retry
+        await client.destroy();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        await client.initialize();
+        await waitForClientReady();
+
+        // Retry sending message
+        await client.sendMessage(chatId, block_message);
+      } else {
+        throw sendError;
+      }
+    }
+
     return res.status(201).json({
       message: "Message sent successfully!",
       to: phone_number
@@ -105,77 +220,173 @@ app.post("/send_message", async (req, res) => {
 
   } catch (err) {
     console.error("Failed to send message:", err);
-    return res.status(500).json({
-      error: "Failed to send message.",
-      details: err.message
+
+    // Classify error type for better error handling
+    let errorMessage = "Failed to send message.";
+    let statusCode = 500;
+
+    if (err.message.includes('Session closed') ||
+        err.message.includes('Protocol error')) {
+      errorMessage = "WhatsApp session closed. Please try again.";
+      statusCode = 503;
+    } else if (err.message.includes('not registered')) {
+      errorMessage = "Number is not registered on WhatsApp.";
+      statusCode = 400;
+    } else if (err.message.includes('timeout')) {
+      errorMessage = "Connection timeout. Please try again.";
+      statusCode = 408;
+    }
+
+    return res.status(statusCode).json({
+      error: errorMessage,
+      details: err.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Check connection status
-app.get('/status', (req, res) => {
-  const status = {
-    ready: !!client.info,
-    info: client.info || null,
-    timestamp: Date.now()
-  };
-
-  res.status(200).json(status);
-});
-
-// Restart the WhatsApp client
-app.post('/restart', async (req, res) => {
+// Enhanced connection status check
+app.get('/status', async (req, res) => {
   try {
-    await client.destroy();
-    await client.initialize();
-    res.json({ message: 'Client restarted successfully' });
+    const state = await client.getState();
+    const status = {
+      ready: !!client.info,
+      state: state,
+      info: client.info || null,
+      timestamp: Date.now(),
+      memory: process.memoryUsage()
+    };
+
+    res.status(200).json(status);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to restart client' });
+    res.status(503).json({
+      ready: false,
+      state: 'ERROR',
+      error: error.message,
+      timestamp: Date.now()
+    });
   }
 });
 
-// Health check endpoint
+// Enhanced restart endpoint with better error handling
+app.post('/restart', async (req, res) => {
+  try {
+    console.log("Manual restart requested...");
+    const success = await restartClient();
+
+    if (success) {
+      res.json({
+        message: 'Client restarted successfully',
+        timestamp: Date.now()
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to restart client',
+        timestamp: Date.now()
+      });
+    }
+  } catch (error) {
+    console.error("Restart error:", error);
+    res.status(500).json({
+      error: 'Failed to restart client',
+      details: error.message,
+      timestamp: Date.now()
+    });
+  }
+});
+
+// Enhanced health check endpoint
 app.get('/health', (req, res) => {
+  const memUsage = process.memoryUsage();
   const health = {
     uptime: process.uptime(),
     message: 'OK',
     timestamp: Date.now(),
-    memory: process.memoryUsage(),
+    memory: {
+      rss: Math.round(memUsage.rss / 1024 / 1024) + ' MB',
+      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024) + ' MB',
+      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024) + ' MB'
+    },
     client_status: client.info ? 'connected' : 'disconnected'
   };
 
   res.status(200).json(health);
 });
 
+// Memory monitoring to prevent memory leaks
+setInterval(() => {
+  const memUsage = process.memoryUsage();
+  const memoryInMB = Math.round(memUsage.rss / 1024 / 1024);
+
+  console.log(`Memory usage: ${memoryInMB} MB`);
+
+  // Restart client if memory usage exceeds 1GB
+  if (memUsage.rss > 1024 * 1024 * 1024) {
+    console.log('High memory usage detected, restarting client...');
+    restartClient();
+  }
+}, 60000); // Check every minute
+
 // Start the server
 app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+  console.log(`WhatsApp API Server is running on http://localhost:${port}`);
+  console.log(`Health check: http://localhost:${port}/health`);
+  console.log(`Status check: http://localhost:${port}/status`);
 });
 
-// Graceful shutdown on SIGINT (Ctrl+C)
+// Enhanced graceful shutdown on SIGINT (Ctrl+C)
 process.on('SIGINT', async () => {
-  console.log('Shutting down application...');
-  await client.destroy();
+  console.log('Shutting down application gracefully...');
+  try {
+    await client.destroy();
+    console.log('WhatsApp client destroyed successfully');
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+  }
   process.exit(0);
 });
 
-// Graceful shutdown on SIGTERM (PM2 or system)
+// Enhanced graceful shutdown on SIGTERM (PM2 or system)
 process.on('SIGTERM', async () => {
-  console.log('Terminating application...');
-  await client.destroy();
+  console.log('Terminating application gracefully...');
+  try {
+    await client.destroy();
+    console.log('WhatsApp client destroyed successfully');
+  } catch (error) {
+    console.error('Error during termination:', error);
+  }
   process.exit(0);
 });
 
-// Handle uncaught exceptions
+// Enhanced uncaught exception handler
 process.on('uncaughtException', async (error) => {
-  console.error('Uncaught exception:', error);
-  await client.destroy();
+  console.error('Uncaught exception occurred:', error);
+  try {
+    await client.destroy();
+    console.log('WhatsApp client destroyed after uncaught exception');
+  } catch (destroyError) {
+    console.error('Error destroying client after uncaught exception:', destroyError);
+  }
   process.exit(1);
 });
 
-// Handle unhandled promise rejections
+// Enhanced unhandled promise rejection handler
 process.on('unhandledRejection', async (reason, promise) => {
   console.error('Unhandled rejection at:', promise, 'reason:', reason);
-  await client.destroy();
-  process.exit(1);
+
+  // Only restart if it's a session-related error
+  if (reason && reason.message &&
+      (reason.message.includes('Session closed') ||
+          reason.message.includes('Protocol error'))) {
+    console.log('Session-related unhandled rejection, attempting restart...');
+    await restartClient();
+  } else {
+    try {
+      await client.destroy();
+      console.log('WhatsApp client destroyed after unhandled rejection');
+    } catch (destroyError) {
+      console.error('Error destroying client after unhandled rejection:', destroyError);
+    }
+    process.exit(1);
+  }
 });
