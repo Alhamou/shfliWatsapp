@@ -45,11 +45,6 @@ client.on("qr", (qr) => {
   qrcode.generate(qr, { small: true });
 });
 
-// When the client is ready
-client.on("ready", () => {
-  console.log("WhatsApp Client is ready!");
-});
-
 // When authentication is successful
 client.on("authenticated", () => {
   console.log("Authentication successful!");
