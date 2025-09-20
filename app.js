@@ -25,7 +25,7 @@ const client = new Client({
       '--disable-images',
       '--disable-web-security',
       '--disable-features=VizDisplayCompositor',
-      '--max_old_space_size=4096', // Increase memory limit
+      '--max_old_space_size=4096',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
@@ -82,53 +82,63 @@ client.on('error', async (error) => {
 client.initialize();
 
 let keepAliveInterval;
+let isRestarting = false; // Flag to prevent multiple simultaneous restarts
 
 client.on("ready", () => {
   console.log("WhatsApp Client is ready!");
 
-  // بدء آلية keep-alive كل 30 ثانية
+  // Start keep-alive mechanism every 30 seconds
   keepAliveInterval = setInterval(async () => {
     try {
       if (client.info) {
-        await client.getState(); // فحص حالة الاتصال
+        await client.getState(); // Check connection status
         console.log("Keep-alive check successful");
       }
     } catch (error) {
-      console.log("Keep-alive failed, attempting restart:", error.message);
-      await restartClient();
+      console.log("Keep-alive failed:", error.message);
+
+      // Check if client is still working before restarting
+      if (client.info && !isRestarting) {
+        console.log("Attempting restart due to keep-alive failure");
+        await restartClient();
+      }
     }
   }, 30000);
 });
 
 // Function to restart the WhatsApp client
 async function restartClient() {
+  if (isRestarting) {
+    console.log("Restart already in progress, skipping...");
+    return false;
+  }
+
+  isRestarting = true;
+
   try {
     console.log("Starting WhatsApp client restart...");
 
-    // إيقاف keep-alive timer
+    // Stop keep-alive timer
     if (keepAliveInterval) {
       clearInterval(keepAliveInterval);
+      keepAliveInterval = null;
     }
 
-    // تنظيف الجلسة الحالية
-    if (client.pupPage && !client.pupPage.isClosed()) {
-      await client.pupPage.close();
-    }
+    // Use the official method to destroy the client
+    await client.destroy();
 
-    if (client.pupBrowser) {
-      await client.pupBrowser.close();
-    }
-
-    // انتظار أطول قبل إعادة التشغيل
+    // Wait longer before restarting
     await new Promise(resolve => setTimeout(resolve, 10000));
 
-    // إعادة تهيئة العميل
+    // Reinitialize the client
     await client.initialize();
 
     console.log("Client restarted successfully");
+    isRestarting = false;
     return true;
   } catch (error) {
     console.error("Failed to restart client:", error);
+    isRestarting = false;
     return false;
   }
 }
@@ -168,11 +178,8 @@ app.post("/send_message", async (req, res) => {
   console.log(`Sending to: ${phone_number}, Message: ${block_message}`);
 
   try {
-    // Format phone number (remove + if present)
-    let formattedNumber = phone_number;
-    if (formattedNumber.startsWith('+')) {
-      formattedNumber = formattedNumber.substring(1);
-    }
+    // Improve phone number formatting
+    let formattedNumber = phone_number.replace(/\D/g, ''); // Remove all non-numeric characters
 
     // Create WhatsApp chat ID
     const chatId = formattedNumber + "@c.us";
@@ -376,6 +383,23 @@ app.get("/groups", async (req, res) => {
   }
 });
 
+// Add middleware to handle unexpected errors
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({
+    error: "Internal server error",
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Add endpoint for undefined routes
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: "Endpoint not found",
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`WhatsApp API Server is running on http://localhost:${port}`);
@@ -387,6 +411,9 @@ app.listen(port, () => {
 process.on('SIGINT', async () => {
   console.log('Shutting down application gracefully...');
   try {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+    }
     await client.destroy();
     console.log('WhatsApp client destroyed successfully');
   } catch (error) {
@@ -399,6 +426,9 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   console.log('Terminating application gracefully...');
   try {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+    }
     await client.destroy();
     console.log('WhatsApp client destroyed successfully');
   } catch (error) {
@@ -411,6 +441,9 @@ process.on('SIGTERM', async () => {
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception occurred:', error);
   try {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+    }
     await client.destroy();
     console.log('WhatsApp client destroyed after uncaught exception');
   } catch (destroyError) {
@@ -431,6 +464,9 @@ process.on('unhandledRejection', async (reason, promise) => {
     await restartClient();
   } else {
     try {
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+      }
       await client.destroy();
       console.log('WhatsApp client destroyed after unhandled rejection');
     } catch (destroyError) {
