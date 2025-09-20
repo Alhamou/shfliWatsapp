@@ -392,8 +392,8 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Add endpoint for undefined routes
-app.use('*', (req, res) => {
+// Handle all other routes (404)
+app.use((req, res) => {
   res.status(404).json({
     error: "Endpoint not found",
     timestamp: new Date().toISOString()
