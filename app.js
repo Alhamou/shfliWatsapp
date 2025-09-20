@@ -13,26 +13,30 @@ const client = new Client({
   puppeteer: {
     executablePath: '/snap/bin/chromium',
     headless: true,
+    timeout: 60000,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
-      '--no-zygote',
       '--single-process',
       '--disable-gpu',
-      '--disk-cache-size=50000000',
-      '--aggressive-cache-discard',
+      '--disable-images',
       '--disable-web-security',
       '--disable-features=VizDisplayCompositor',
-      '--max_old_space_size=2048', // Increase memory limit
+      '--max_old_space_size=4096', // Increase memory limit
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding'
+      '--disable-renderer-backgrounding',
+      '--disable-sync',
+      '--disable-background-networking'
     ]
   },
-  session: 'whatsapp-session' // Add session identifier
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+  }
 });
 
 // Display QR Code when needed
@@ -57,12 +61,12 @@ client.on("auth_failure", (msg) => {
 });
 
 // Enhanced disconnection handler with auto-reconnect
-client.on("disconnected", async (reason) => {
-  console.log("Client disconnected:", reason);
+client.on('disconnected', async (reason) => {
+  console.log(`Client disconnected at ${new Date().toISOString()}: ${reason}`);
+  console.log('Memory usage:', process.memoryUsage());
 
-  // Auto-reconnect for navigation errors
-  if (reason === 'NAVIGATION') {
-    console.log("Attempting to reconnect due to navigation error...");
+  if (reason === 'NAVIGATION' || reason === 'WEBSOCKET_CONNECTION_ERROR') {
+    console.log("Attempting auto-reconnect...");
     await restartClient();
   }
 });
@@ -82,20 +86,48 @@ client.on('error', async (error) => {
 // Initialize the client
 client.initialize();
 
+let keepAliveInterval;
+
+client.on("ready", () => {
+  console.log("WhatsApp Client is ready!");
+
+  // بدء آلية keep-alive كل 30 ثانية
+  keepAliveInterval = setInterval(async () => {
+    try {
+      if (client.info) {
+        await client.getState(); // فحص حالة الاتصال
+        console.log("Keep-alive check successful");
+      }
+    } catch (error) {
+      console.log("Keep-alive failed, attempting restart:", error.message);
+      await restartClient();
+    }
+  }, 30000);
+});
+
 // Function to restart the WhatsApp client
 async function restartClient() {
   try {
     console.log("Starting WhatsApp client restart...");
 
-    // Destroy existing client if it exists
-    if (client.pupPage) {
-      await client.destroy();
+    // إيقاف keep-alive timer
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
     }
 
-    // Wait before reinitializing
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // تنظيف الجلسة الحالية
+    if (client.pupPage && !client.pupPage.isClosed()) {
+      await client.pupPage.close();
+    }
 
-    // Reinitialize the client
+    if (client.pupBrowser) {
+      await client.pupBrowser.close();
+    }
+
+    // انتظار أطول قبل إعادة التشغيل
+    await new Promise(resolve => setTimeout(resolve, 10000));
+
+    // إعادة تهيئة العميل
     await client.initialize();
 
     console.log("Client restarted successfully");
